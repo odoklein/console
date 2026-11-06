@@ -1,0 +1,39 @@
+{
+  "name": "agency-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Console: creates, upgrades, backs up, suspends and deletes agency CRM instances (one database, container and bucket per agency).",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch src/index.ts",
+    "start": "node src/index.ts",
+    "migrate": "node --env-file-if-exists=.env src/cli/migrate.ts",
+    "agency:adopt": "node --env-file-if-exists=.env src/cli/adopt-agency.ts",
+    "operator:create": "node --env-file-if-exists=.env src/cli/create-operator.ts",
+    "operator:role": "node --env-file-if-exists=.env src/cli/operator-role.ts",
+    "backup:decrypt": "node --env-file-if-exists=.env src/cli/decrypt-backup.ts",
+    "db:local": "pglite-server --db=.data/pglite --port=5434",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1156.0",
+    "@aws-sdk/lib-storage": "^3.1156.0",
+    "@aws-sdk/s3-request-presigner": "^3.1156.0",
+    "@hono/node-server": "^2.1.5",
+    "hono": "^4.13.14",
+    "nodemailer": "^10.2.1",
+    "postgres": "^3.4.9",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-socket": "^0.2.14",
+    "@types/node": "^24.19.2",
+    "@types/nodemailer": "^8.0.2",
+    "typescript": "^7.0.2"
+  }
+}
