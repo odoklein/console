@@ -14,7 +14,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 export const ROLE_HINTS: Record<Role, string> = {
   owner: 'Tout, y compris supprimer une agence, gérer l’équipe et télécharger la sauvegarde de la Console.',
   operator: 'Crée, met à jour, sauvegarde, restaure et règle les agences. Ne supprime pas, ne gère pas l’équipe.',
-  support: 'Consulte tout, lance une sauvegarde, traite les alertes. Rien de destructif.',
+  support: 'Consulte tout, répond aux tickets des agences, lance une sauvegarde, traite les alertes. Rien de destructif.',
   viewer: 'Consulte seulement.',
 };
 
@@ -32,6 +32,7 @@ export type Permission =
   | 'agency.delete'
   | 'job.manage'
   | 'alert.resolve'
+  | 'support.reply'
   | 'platform.backup'
   | 'platform.download'
   | 'team.manage';
@@ -52,6 +53,8 @@ const MATRIX: Record<Permission, Role[]> = {
   'agency.delete': ['owner'],
   'job.manage': OWNER_OPERATOR,
   'alert.resolve': ['owner', 'operator', 'support'],
+  // Answer and move the agencies' Support Technique tickets, edit the canned replies.
+  'support.reply': ['owner', 'operator', 'support'],
   'platform.backup': OWNER_OPERATOR,
   // The Console's dump holds every agency's sealed secrets.
   'platform.download': ['owner'],

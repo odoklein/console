@@ -4,7 +4,8 @@
 //   - nightly backups, retention purge, stale-backup alert;
 //   - monthly restore drill;
 //   - nightly backup of the Console's own database; off-site copy of every encrypted backup;
-//   - re-check of custom domains waiting for their DNS record.
+//   - re-check of custom domains waiting for their DNS record;
+//   - support inbox: each agency's Support Technique tickets every 2 minutes (src/support.ts).
 // Each piece is an exported function of (platform, now) so the tests can drive time.
 
 import { listAgencies, readState, type Agency } from './agencies.ts';
@@ -16,6 +17,7 @@ import { backupConsole, instanceApi, probe, recordHealth } from './jobs/ops.ts';
 import { enqueue, type JobKind } from './jobs/queue.ts';
 import { errorFields, log } from './log.ts';
 import type { Platform } from './platform.ts';
+import { supportPass } from './support.ts';
 
 const LIVE = new Set(['active', 'suspended']);
 const CATALOG_TTL_MS = 6 * 3_600_000;
@@ -318,6 +320,19 @@ export async function domainPass(p: Platform, now: Date): Promise<void> {
   for (const r of rows) await enqueue(p.sql, { agencyId: r.id, kind: 'domain', steps: plannedSteps('domain'), dedupe: true });
 }
 
+// ---------- support inbox ----------
+
+let supportRunning = false;
+
+/** In the background like cron runs: a slow agency (30 s timeout per page) must not delay the health probes. */
+function supportInBackground(p: Platform, now: Date): Promise<void> | null {
+  if (supportRunning) return null;
+  supportRunning = true;
+  return supportPass(p, now)
+    .catch((err) => log.error('scheduler.support_failed', errorFields(err)))
+    .finally(() => (supportRunning = false));
+}
+
 export async function tick(p: Platform, now: Date): Promise<Promise<void>[]> {
   const started: Promise<void>[] = [];
   for (const [name, pass] of [
@@ -326,6 +341,10 @@ export async function tick(p: Platform, now: Date): Promise<Promise<void>[]> {
     ['backups', () => backupPass(p, now)],
     ['domains', () => domainPass(p, now)],
     ['offsite', () => offsitePass(p, now)],
+    ['support', async () => {
+      const run = supportInBackground(p, now);
+      if (run) started.push(run);
+    }],
   ] as const) {
     try {
       await pass();

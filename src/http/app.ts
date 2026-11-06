@@ -39,6 +39,26 @@ import { deriveNames, LOGO_SLOTS, validateAgencyConfig, type LogoSlot } from '..
 import { can, isRole, ROLE_LABELS, type Permission } from '../roles.ts';
 import { getRollout, rolloutForFleet, startRollout, stopRollout } from '../rollouts.ts';
 import { consoleBackupBusy, consoleBackupInBackground } from '../scheduler.ts';
+import {
+  actOnTicket,
+  createMacro,
+  deleteMacro,
+  fetchTicket,
+  inboxCounts,
+  listInbox,
+  listMacros,
+  macroProblem,
+  parseActionForm,
+  parseFilters,
+  filterQuery,
+  supportByAgency,
+  syncable,
+  syncAgencySupport,
+  TICKET_ID,
+  unreadCount,
+  type InboxFilters,
+} from '../support.ts';
+import { macrosPage, supportPage, type SelectedTicket } from './views/support.ts';
 import { agencyPage, confirmPage, type CronView, type ExportView } from './views/agency.ts';
 import { keysPage, type FixedItem, type KeysView } from './views/keys.ts';
 import { loginPage, messagePage, setupPage, notFoundPage } from './views/auth-pages.ts';
@@ -55,7 +75,7 @@ export type AppOptions = { p: Platform; secureCookies: boolean; onJobQueued?: ()
 
 const COOKIE = 'console_session';
 const PUBLIC_DIR = new URL('../../public/', import.meta.url);
-const STATIC: Record<string, string> = { 'app.css': 'text/css', 'common.js': 'text/javascript', 'job.js': 'text/javascript', 'wizard.js': 'text/javascript' };
+const STATIC: Record<string, string> = { 'app.css': 'text/css', 'common.js': 'text/javascript', 'job.js': 'text/javascript', 'wizard.js': 'text/javascript', 'support.js': 'text/javascript' };
 const TAG = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const MAX_LOGO_BYTES = 1_048_576;
 
@@ -82,9 +102,9 @@ export function createApp(opts: AppOptions) {
   const kick = () => opts.onJobQueued?.();
 
   async function chrome(c: C, active?: Chrome['active']): Promise<Chrome> {
-    const [n] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM alerts WHERE resolved_at IS NULL`;
     const op = c.get('operator');
-    return { operator: { name: op.name, email: op.email }, role: op.role, openAlerts: n?.n ?? 0, active, csrf: c.get('csrf') };
+    const [[n], supportUnread] = await Promise.all([sql<{ n: number }[]>`SELECT count(*)::int AS n FROM alerts WHERE resolved_at IS NULL`, unreadCount(sql, op.id)]);
+    return { operator: { name: op.name, email: op.email }, role: op.role, openAlerts: n?.n ?? 0, supportUnread, active, csrf: c.get('csrf') };
   }
 
   async function forbidden(c: C, perm: Permission) {
@@ -240,7 +260,7 @@ export function createApp(opts: AppOptions) {
     const running = await sql<{ agencyId: string; kind: JobKind }[]>`SELECT DISTINCT ON (agency_id) agency_id, kind FROM jobs WHERE status IN ('running', 'queued') ORDER BY agency_id, created_at`;
     const versions = [...new Set(agencies.filter((a) => (a.status === 'active' || a.status === 'suspended') && a.imageTag).map((a) => a.imageTag!))];
     const now = new Date();
-    return c.html(fleetPage({ agencies, chrome: await chrome(c), now, runningJobs: new Map(running.map((r) => [r.agencyId, JOB_KIND[r.kind]])), versions, rollout: await rolloutForFleet(p, now) }));
+    return c.html(fleetPage({ agencies, chrome: await chrome(c), now, runningJobs: new Map(running.map((r) => [r.agencyId, JOB_KIND[r.kind]])), versions, rollout: await rolloutForFleet(p, now), support: await supportByAgency(sql) }));
   });
 
   app.get('/fleet/upgrade', need('agency.upgrade'), async (c) => c.html(fleetUpgradePage({ chrome: await chrome(c), agencies: await listAgencies(sql), defaultTag: p.settings.defaultTag })));
@@ -373,7 +393,8 @@ export function createApp(opts: AppOptions) {
       sql<CronView[]>`SELECT job_id, schedule, description, last_run_at, last_ok, last_error, failures FROM agency_cron WHERE agency_id = ${a.id} ORDER BY job_id`,
       sql<{ id: string; message: string; openedAt: Date }[]>`SELECT id, message, opened_at FROM alerts WHERE agency_id = ${a.id} AND resolved_at IS NULL`,
     ]);
-    return c.html(agencyPage({ chrome: await chrome(c, 'fleet'), agency: a, jobs, backups, exports, crons, alerts, platformDomain: p.settings.platformDomain, defaultTag: p.settings.defaultTag, now: new Date() }));
+    const support = (await supportByAgency(sql)).get(a.id) ?? null;
+    return c.html(agencyPage({ chrome: await chrome(c, 'fleet'), agency: a, jobs, backups, exports, crons, alerts, platformDomain: p.settings.platformDomain, defaultTag: p.settings.defaultTag, now: new Date(), support }));
   });
 
   // ---------- keys & configuration ----------
@@ -721,6 +742,107 @@ export function createApp(opts: AppOptions) {
   });
 
   // ---------- alerts, team, audit ----------
+
+  // ---------- support: every agency's Support Technique tickets ----------
+
+  /** Filters carried by the support forms (prefixed f_ so they never collide with status/priority fields). */
+  function postedFilters(body: Record<string, unknown>): InboxFilters {
+    const g = (k: string) => (typeof body[k] === 'string' ? (body[k] as string) : undefined);
+    return parseFilters({ view: g('view'), agency: g('f_agency'), status: g('f_status'), priority: g('f_priority'), category: g('f_category'), q: g('f_q'), page: g('page') });
+  }
+
+  async function renderInbox(
+    c: C,
+    filters: InboxFilters,
+    selectedKey: string | null,
+    extra: { error?: string; draft?: { content: string; status: string }; notice?: string; ticket?: SelectedTicket['result'] } = {},
+  ) {
+    const now = new Date();
+    const op = c.get('operator');
+    let selected: SelectedTicket | null = null;
+    const m = selectedKey ? /^([a-z0-9-]{1,63})\/([A-Za-z0-9_-]{1,64})$/.exec(selectedKey) : null;
+    if (m) {
+      const a = await getAgency(sql, m[1]!);
+      if (a && a.status !== 'deleted') {
+        const result = extra.ticket ?? (await fetchTicket(p, a, m[2]!, op.id, now));
+        selected = { slug: a.slug, agencyName: a.name, host: a.primaryHost, ticketId: m[2]!, result: result.ok ? result : { ok: false, message: result.message } };
+      }
+    }
+    // Counts and the list after the fetch: opening a ticket marks it read.
+    const [{ views, agencies }, { rows, total }, macros] = await Promise.all([inboxCounts(sql, op.id, now), listInbox(sql, op.id, filters, now), listMacros(sql)]);
+    return supportPage({ chrome: await chrome(c, 'support'), filters, views, agencies, rows, total, selected, macros, now, ...extra });
+  }
+
+  app.get('/support', async (c) => {
+    const filters = parseFilters(c.req.query());
+    const t = c.req.query('t') ?? null;
+    return c.html(await renderInbox(c, filters, t, { notice: c.req.query('sent') ? 'Envoyé dans le CRM de l’agence.' : undefined }));
+  });
+
+  // The "il y a du nouveau" banner: has anything changed since the newest ticket on screen?
+  app.get('/support/poll', async (c) => {
+    const since = Number(c.req.query('since'));
+    const [r] = await sql<{ latest: Date | null }[]>`SELECT max(t.updated_at) AS latest FROM support_tickets t JOIN agencies a ON a.id = t.agency_id AND a.status <> 'deleted'`;
+    const latest = r?.latest ? new Date(r.latest).getTime() : 0;
+    return c.json({ changed: Number.isFinite(since) && latest > since, unread: await unreadCount(sql, c.get('operator').id) });
+  });
+
+  app.post('/support/sync', need('support.reply'), async (c) => {
+    const filters = postedFilters(await c.req.parseBody());
+    const now = new Date();
+    const due = (await listAgencies(sql)).filter(syncable);
+    const results = await Promise.all(due.map((a) => syncAgencySupport(p, a, now)));
+    await audit(sql, { operatorId: c.get('operator').id, action: 'support.sync', detail: { agencies: due.length, failed: results.filter((r) => !r.ok).length }, ip: ipOf(c) });
+    return c.redirect(`/support${filterQuery(filters)}`);
+  });
+
+  app.post('/support/t/:slug/:ticketId', need('support.reply'), async (c) => {
+    const body = await c.req.parseBody();
+    const filters = postedFilters(body);
+    const a = await getAgency(sql, c.req.param('slug'));
+    const ticketId = c.req.param('ticketId');
+    if (!a || a.status === 'deleted' || !TICKET_ID.test(ticketId)) return c.notFound();
+    const key = `${a.slug}/${ticketId}`;
+    const draft = { content: typeof body.content === 'string' ? body.content : '', status: typeof body.status === 'string' ? body.status : '' };
+    const parsed = parseActionForm(body);
+    if (!parsed.ok) return c.html(await renderInbox(c, filters, key, { error: parsed.message, draft }), 400);
+
+    const op = c.get('operator');
+    const now = new Date();
+    const result = await actOnTicket(p, a, ticketId, parsed.value, op.name, now);
+    if (!result.ok) {
+      // The send failed: the page comes back with the text still in the box and the CRM's own words.
+      return c.html(await renderInbox(c, filters, key, { error: result.message, draft: parsed.value.action === 'priority' ? undefined : draft }), result.status === 422 ? 422 : 502);
+    }
+    const action = parsed.value.action === 'comment' ? 'support.reply' : parsed.value.action === 'status' ? 'support.status' : 'support.priority';
+    await audit(sql, {
+      operatorId: op.id,
+      agencyId: a.id,
+      action,
+      detail: { ticket: result.ticket.ref, ...(parsed.value.action === 'status' ? { status: parsed.value.status, withReply: Boolean(parsed.value.comment) } : {}), ...(parsed.value.action === 'priority' ? { priority: parsed.value.priority } : {}) },
+      ip: ipOf(c),
+    });
+    return c.redirect(`/support${filterQuery({ ...filters, t: key })}&sent=1`);
+  });
+
+  app.get('/support/macros', async (c) => c.html(macrosPage({ chrome: await chrome(c, 'support'), macros: await listMacros(sql) })));
+
+  app.post('/support/macros', need('support.reply'), async (c) => {
+    const body = await c.req.parseBody();
+    const title = str(body.title);
+    const text = str(body.body);
+    const problem = macroProblem(title, text);
+    if (problem) return c.html(macrosPage({ chrome: await chrome(c, 'support'), macros: await listMacros(sql), error: problem, values: { title, body: text } }), 400);
+    const id = await createMacro(sql, { title, body: text, createdBy: c.get('operator').id });
+    await audit(sql, { operatorId: c.get('operator').id, action: 'support.macro.create', detail: { id, title }, ip: ipOf(c) });
+    return c.redirect('/support/macros');
+  });
+
+  app.post('/support/macros/:id/delete', need('support.reply'), async (c) => {
+    if (!(await deleteMacro(sql, c.req.param('id')))) return c.notFound();
+    await audit(sql, { operatorId: c.get('operator').id, action: 'support.macro.delete', detail: { id: c.req.param('id') }, ip: ipOf(c) });
+    return c.redirect('/support/macros');
+  });
 
   app.get('/alerts', async (c) => c.html(alertsPage({ chrome: await chrome(c, 'alerts'), open: await openAlerts(sql), recent: await recentAlerts(sql), now: new Date() })));
 

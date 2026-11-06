@@ -19,6 +19,111 @@ function verify(secret: string, method: string, path: string, body: unknown, hea
   return headers['X-Instance-Signature'] === `v1=${createHmac('sha256', secret).update(canonical).digest('hex')}`;
 }
 
+// ---------- the CRM's support API (/api/instance/support/*), one ticket store per agency host ----------
+
+export type FakeTicket = {
+  id: string;
+  number: number;
+  title: string;
+  description: string | null;
+  category: string;
+  scope: string;
+  priority: string;
+  status: string;
+  validation: string;
+  requester: { name: string; role: string };
+  createdAt: string;
+  updatedAt: string;
+  dueDate: string | null;
+  thread: { kind: 'comment' | 'event'; id: string; at: string; author: { name: string; role: string; platform: boolean }; content?: string; field?: string; from?: string | null; to?: string | null }[];
+};
+
+export type FakeSupport = { tickets: FakeTicket[]; down: boolean; missing: boolean; queries: string[]; posts: unknown[] };
+
+const TRANSITIONS: Record<string, string[]> = {
+  NEW: ['TODO', 'IN_PROGRESS'],
+  TODO: ['NEW', 'IN_PROGRESS'],
+  IN_PROGRESS: ['TODO', 'BLOCKED', 'TESTING'],
+  BLOCKED: ['TODO', 'IN_PROGRESS'],
+  TESTING: ['IN_PROGRESS', 'BLOCKED', 'COMPLETED'],
+  COMPLETED: ['IN_PROGRESS'],
+};
+
+function summary(t: FakeTicket, now: number) {
+  return {
+    id: t.id,
+    number: t.number,
+    ref: `#TC-${String(t.number).padStart(4, '0')}`,
+    title: t.title,
+    preview: t.description,
+    category: t.category,
+    scope: t.scope,
+    priority: t.priority,
+    status: t.status,
+    validation: t.validation,
+    dueDate: t.dueDate,
+    overdue: Boolean(t.dueDate && t.status !== 'COMPLETED' && Date.parse(t.dueDate) < now),
+    completedAt: t.status === 'COMPLETED' ? t.updatedAt : null,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    requester: t.requester,
+    assignee: null,
+    client: null,
+    comments: t.thread.filter((i) => i.kind === 'comment').length,
+    attachments: 0,
+    lastPlatformReplyAt: t.thread.filter((i) => i.kind === 'comment' && i.author.platform).map((i) => i.at).sort().pop() ?? null,
+  };
+}
+
+function supportApi(store: FakeSupport, method: string, path: string, json: any, now: () => number): { status: number; json: unknown } {
+  if (store.missing) return { status: 404, json: 'Not Found' };
+  const url = new URL(path, 'https://x');
+  const iso = new Date(now()).toISOString();
+  if (url.pathname === '/api/instance/support/tickets' && method === 'GET') {
+    store.queries.push(url.search);
+    const since = url.searchParams.get('updatedSince');
+    const limit = Number(url.searchParams.get('limit') ?? 50);
+    const offset = Number(url.searchParams.get('cursor') ?? 0);
+    const all = [...store.tickets].filter((t) => !since || Date.parse(t.updatedAt) >= Date.parse(since)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const page = all.slice(offset, offset + limit);
+    const open = store.tickets.filter((t) => t.status !== 'COMPLETED');
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        tickets: page.map((t) => summary(t, now())),
+        nextCursor: offset + limit < all.length ? String(offset + limit) : null,
+        counts: { open: open.length, new: open.filter((t) => t.status === 'NEW').length, urgent: open.filter((t) => t.priority === 'URGENT').length, blocked: 0, active: 0, overdue: 0, pendingValidation: 0, unassigned: open.length },
+        serverTime: iso,
+      },
+    };
+  }
+  const m = /^\/api\/instance\/support\/tickets\/([^/]+)$/.exec(url.pathname);
+  const t = m ? store.tickets.find((x) => x.id === m[1]) : undefined;
+  if (m && !t) return { status: 404, json: { ok: false, error: 'ticket_not_found' } };
+  if (!t) return { status: 404, json: 'Not Found' };
+  const detail = () => ({ ok: true, ticket: { ...summary(t, now()), description: t.description, mission: null, attachments: [], releaseChecks: [], allowedStatuses: TRANSITIONS[t.status] ?? [], thread: t.thread } });
+  if (method === 'GET') return { status: 200, json: detail() };
+  store.posts.push(json);
+  const platform = { name: 'Support plateforme', role: 'DEVELOPER', platform: true };
+  const sign = (c: string) => (json.operator ? `${c}\n\n— ${json.operator}, Support plateforme` : c);
+  if (json.action === 'comment') {
+    t.thread.push({ kind: 'comment', id: `c${t.thread.length + 1}`, at: iso, author: platform, content: sign(json.content) });
+  } else if (json.action === 'status') {
+    if (!(TRANSITIONS[t.status] ?? []).includes(json.status)) {
+      return { status: 422, json: { ok: false, error: 'rule_violation', message: `Transition de statut invalide : ${t.status} → ${json.status}` } };
+    }
+    t.thread.push({ kind: 'event', id: `e${t.thread.length + 1}`, at: iso, author: platform, field: 'status', from: t.status, to: json.status });
+    t.status = json.status;
+    if (json.comment) t.thread.push({ kind: 'comment', id: `c${t.thread.length + 1}`, at: iso, author: platform, content: sign(json.comment) });
+  } else if (json.action === 'priority') {
+    t.thread.push({ kind: 'event', id: `e${t.thread.length + 1}`, at: iso, author: platform, field: 'priority', from: t.priority, to: json.priority });
+    t.priority = json.priority;
+  }
+  t.updatedAt = iso;
+  return { status: 200, json: detail() };
+}
+
 export function makeFleet() {
   const calls: string[] = [];
   const databases = new Map<string, { owner: string; content: string }>();
@@ -44,6 +149,12 @@ export function makeFleet() {
     /** Keys present in the last env file Dokploy received. */
     envKeys: new Set<string>(),
     lastEnv: '',
+  };
+  /** Support Technique tickets of each agency CRM, by host (e.g. agence-nord.crm-agence.fr). */
+  const support = new Map<string, FakeSupport>();
+  const supportFor = (host: string) => {
+    if (!support.has(host)) support.set(host, { tickets: [], down: false, missing: false, queries: [], posts: [] });
+    return support.get(host)!;
   };
   const invites: { to: string; url: string }[] = [];
   const alerts: string[] = [];
@@ -150,6 +261,11 @@ export function makeFleet() {
     instance: (_base, secret) => async (method, path, body, headers = {}) => {
       const signed = (await import('../src/provision/instance-auth.ts')).signInstanceRequest({ secret, method, pathWithQuery: path, body });
       if (!verify(secret, method, path, body, signed as Record<string, string>)) instance.badSignatures++;
+      if (path.startsWith('/api/instance/support/')) {
+        const store = supportFor(new URL(_base).host);
+        if (store.down) throw new Error('connect ECONNREFUSED');
+        return supportApi(store, method, path, typeof body === 'string' && body ? JSON.parse(body) : undefined, () => clock);
+      }
       const app = [...apps.values()][0];
       if (instance.down || !app || app.stopped) throw new Error('connect ECONNREFUSED');
       void headers;
@@ -243,6 +359,8 @@ export function makeFleet() {
     apps,
     routes,
     instance,
+    support,
+    supportFor,
     invites,
     alerts,
     advance: (ms: number) => void (clock += ms),
