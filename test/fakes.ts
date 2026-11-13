@@ -36,6 +36,10 @@ export function makeFleet() {
     badTags: new Set<string>(),
     down: false,
     cronCalls: [] as string[],
+    /** Changelog entries the instance holds (PUT /api/instance/changelog), by externalId. */
+    changelog: new Map<string, any>(),
+    /** An old image: the changelog routes answer 404. */
+    noChangelog: false,
     cronFails: new Set<string>(),
     exports: new Map<string, number>(),
     badSignatures: 0,
@@ -45,6 +49,8 @@ export function makeFleet() {
     envKeys: new Set<string>(),
     lastEnv: '',
   };
+  /** Commits GitHub returns for `base...head`. */
+  const github = { commits: new Map<string, import('../src/infra/types.ts').GitCommit[]>() };
   const invites: { to: string; url: string }[] = [];
   const alerts: string[] = [];
   let clock = Date.parse('2026-10-26T10:00:00Z');
@@ -196,6 +202,16 @@ export function makeFleet() {
         calls.push(`keys:${Object.keys(json.values).join(',')}`);
         return { status: 200, json: { ok: true } };
       }
+      if (path === '/api/instance/changelog' && method === 'PUT') {
+        if (instance.noChangelog) return { status: 404, json: { error: 'not_found' } };
+        instance.changelog.set(json.externalId, json);
+        return { status: 200, json: { ok: true } };
+      }
+      if (path.startsWith('/api/instance/changelog/') && method === 'DELETE') {
+        if (instance.noChangelog) return { status: 404, json: { error: 'not_found' } };
+        instance.changelog.delete(decodeURIComponent(path.split('/').pop()!));
+        return { status: 200, json: { ok: true } };
+      }
       if (path === '/api/instance/cron' && method === 'GET') {
         return { status: 200, json: { ok: true, jobs: [{ id: 'messaging-outbox', schedule: '* * * * *' }, { id: 'exclusion-sweep', schedule: '0 4 * * *' }] } };
       }
@@ -222,6 +238,7 @@ export function makeFleet() {
       writeRoute: async (slug, content) => (routes.set(slug, content), `/dyn/agency-${slug}.yml`),
       removeRoute: async (slug) => void routes.delete(slug),
     },
+    github: { compare: async (base, head) => (github.commits.get(`${base}...${head}`) ?? []) },
     download: async (url) => Readable.from([Buffer.from(`ZIP(${url})`)]),
     notify: {
       alert: async (subject) => (alerts.push(subject), true),
@@ -243,6 +260,7 @@ export function makeFleet() {
     apps,
     routes,
     instance,
+    github,
     invites,
     alerts,
     advance: (ms: number) => void (clock += ms),

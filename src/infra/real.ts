@@ -383,6 +383,7 @@ export function realInfra(config: Config): Infra {
     instance: realInstance(),
     dns: { resolveCname: (host) => dns.resolveCname(host), resolve4: (host) => dns.resolve4(host) },
     proxy: config.PROVISION_PROXY_DYNAMIC_DIR ? realProxy(config.PROVISION_PROXY_DYNAMIC_DIR) : undefined,
+    github: config.GITHUB_TOKEN ? realGithub(config.GITHUB_TOKEN, config.GITHUB_REPO) : undefined,
     async download(url) {
       const res = await fetch(url, { signal: AbortSignal.timeout(30 * 60_000) });
       if (!res.ok || !res.body) throw new Error(`téléchargement impossible: HTTP ${res.status}`);
@@ -400,4 +401,20 @@ export async function configureMcAlias(config: Config): Promise<void> {
   await runMc(['alias', 'set', config.PROVISION_MINIO_MC_ALIAS, config.PROVISION_MINIO_ENDPOINT, config.PROVISION_MINIO_ACCESS_KEY_ID, config.PROVISION_MINIO_SECRET_ACCESS_KEY]).catch((err) =>
     log.warn('mc.alias_failed', { error: String(err) }),
   );
+}
+
+/** Read-only GitHub: the commits between two refs (tags or shas), newest last. */
+function realGithub(token: string, repo: string): NonNullable<Infra['github']> {
+  return {
+    async compare(base, head) {
+      const url = `https://api.github.com/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'agency-console' },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`GitHub : HTTP ${res.status} pour ${base}...${head}`);
+      const json = (await res.json()) as { commits?: { sha: string; html_url: string; commit: { message: string; author?: { name?: string; date?: string } } }[] };
+      return (json.commits ?? []).map((c) => ({ sha: c.sha, message: c.commit.message, author: c.commit.author?.name ?? '', date: c.commit.author?.date ?? '', url: c.html_url }));
+    },
+  };
 }

@@ -30,6 +30,8 @@ export type Permission =
   | 'agency.keys'
   | 'agency.restore'
   | 'agency.delete'
+  | 'release.manage'
+  | 'announcement.send'
   | 'job.manage'
   | 'alert.resolve'
   | 'platform.backup'
@@ -50,6 +52,8 @@ const MATRIX: Record<Permission, Role[]> = {
   'agency.keys': OWNER_OPERATOR,
   'agency.restore': OWNER_OPERATOR,
   'agency.delete': ['owner'],
+  'release.manage': OWNER_OPERATOR,
+  'announcement.send': OWNER_OPERATOR,
   'job.manage': OWNER_OPERATOR,
   'alert.resolve': ['owner', 'operator', 'support'],
   'platform.backup': OWNER_OPERATOR,

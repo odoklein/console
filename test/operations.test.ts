@@ -35,7 +35,7 @@ before(async () => {
   server = new PGLiteSocketServer({ db, port: PORT, host: '127.0.0.1' });
   await server.start();
   sql = createDb(`postgres://postgres@127.0.0.1:${PORT}/postgres`, 1);
-  assert.deepEqual(await migrate(sql), ['0001_init.sql', '0002_control.sql']);
+  assert.deepEqual(await migrate(sql), ['0001_init.sql', '0002_control.sql', '0003_releases.sql']);
   fleet = makeFleet();
   p = {
     sql,

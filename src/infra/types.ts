@@ -49,12 +49,18 @@ export type Infra = {
   instance: Deps['instance'];
   dns: Deps['dns'];
   proxy?: NonNullable<Deps['proxy']> & { removeRoute(slug: string): Promise<void> };
+  /** GitHub (read only): the commits between two tags, to draft release notes. Absent = notes are written by hand. */
+  github?: {
+    compare(base: string, head: string): Promise<GitCommit[]>;
+  };
   /** Plain HTTP GET (export download before the copy to the platform bucket). */
   download(url: string): Promise<Readable>;
   notify: Notifier;
   sleep(ms: number): Promise<void>;
   now(): Date;
 };
+
+export type GitCommit = { sha: string; message: string; author: string; date: string; url: string };
 
 export type DbTarget = { host: string; port: number; database: string; user: string; password: string; params?: string };
 

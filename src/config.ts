@@ -41,6 +41,9 @@ const Env = z.object({
   PROVISION_IMAGE_REPO: z.string().default('ghcr.io/odoklein/captainprospect-crm'),
   /** Tag a new agency starts on (a release tag, never :main). */
   PROVISION_DEFAULT_TAG: z.string().trim().min(1),
+  /** Read-only GitHub token and repo used to draft release notes from commits (empty = write notes by hand). */
+  GITHUB_TOKEN: optional,
+  GITHUB_REPO: z.string().default('odoklein/captainprospect-crm'),
   PROVISION_REGISTRY_USER: optional,
   PROVISION_REGISTRY_TOKEN: optional,
   PROVISION_DOCKER_NETWORK: optional,
