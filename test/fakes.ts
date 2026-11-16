@@ -145,6 +145,10 @@ export function makeFleet() {
     changelog: new Map<string, any>(),
     /** An old image: the changelog routes answer 404. */
     noChangelog: false,
+    /** How many people saw each entry, by externalId (GET /api/instance/changelog). */
+    changelogSeen: new Map<string, number>(),
+    /** Next changelog PUT answers this status once (422, 500…). */
+    changelogFailOnce: null as number | null,
     cronFails: new Set<string>(),
     exports: new Map<string, number>(),
     badSignatures: 0,
@@ -317,6 +321,16 @@ export function makeFleet() {
         if (Object.keys(errors).length) return { status: 422, json: { ok: false, error: 'validation_failed', errors } };
         calls.push(`keys:${Object.keys(json.values).join(',')}`);
         return { status: 200, json: { ok: true } };
+      }
+      if (path === '/api/instance/changelog' && method === 'GET') {
+        if (instance.noChangelog) return { status: 404, json: { error: 'not_found' } };
+        const entries = [...instance.changelog.values()].map((e: any) => ({ externalId: e.externalId, kind: e.kind, title: e.title, publishedAt: e.publishedAt, seen: instance.changelogSeen.get(e.externalId) ?? 0, audienceSize: 6 }));
+        return { status: 200, json: { ok: true, entries } };
+      }
+      if (path === '/api/instance/changelog' && method === 'PUT' && instance.changelogFailOnce) {
+        const status = instance.changelogFailOnce;
+        instance.changelogFailOnce = null;
+        return { status, json: status === 422 ? { ok: false, error: 'validation_failed', errors: [{ path: 'title', message: 'trop long' }] } : { error: 'boom' } };
       }
       if (path === '/api/instance/changelog' && method === 'PUT') {
         if (instance.noChangelog) return { status: 404, json: { error: 'not_found' } };

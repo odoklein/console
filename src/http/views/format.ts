@@ -98,6 +98,13 @@ const AUDIT_LABELS: Record<string, string> = {
   'support.macro.delete': 'Réponse type supprimée',
   'backup.download': 'Sauvegarde téléchargée',
   'export.download': 'Export téléchargé',
+  'release.create': 'Notes de version préparées',
+  'release.save': 'Notes de version modifiées',
+  'release.publish': 'Notes de version publiées',
+  'release.retract': 'Notes de version retirées',
+  'announcement.create': 'Annonce publiée',
+  'announcement.retract': 'Annonce retirée',
+  'delivery.retry': 'Envoi relancé',
   'job.cancel': 'Opération annulée',
   'job.retry': 'Opération relancée',
 };

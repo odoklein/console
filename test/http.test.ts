@@ -362,3 +362,39 @@ test('throttling: five wrong passwords lock the account for 15 minutes', async (
   for (let i = 0; i < 5; i++) assert.equal((await req('POST', '/login', { email: 'odo@example.fr', password: 'faux' })).status, 401);
   assert.equal((await req('POST', '/login', { email: 'odo@example.fr', password: 'un mot de passe long' })).status, 429);
 });
+
+test('Nouveautés: pages render, a draft is edited and published, support cannot publish', async () => {
+  let r = await req('GET', '/news');
+  assert.equal(r.status, 200);
+  assert.match(r.text, /Aucune note de version/);
+  await req('GET', '/news/releases/new');
+  r = await req('POST', '/news/releases', { _csrf: csrf, tag: 'pas un tag !', fromTag: '' });
+  assert.equal(r.status, 400);
+  r = await req('POST', '/news/releases', { _csrf: csrf, tag: 'v9', fromTag: '' });
+  assert.match(r.location!, /^\/news\/releases\/[0-9a-f-]{36}$/);
+  const editor = r.location!;
+  r = await req('GET', editor);
+  assert.match(r.text, /Aperçu dans le CRM/);
+  const form = new URLSearchParams({ _csrf: csrf, title: 'Version 9', summary: '', audience: 'managers', target: 'tag', intent: 'publish' });
+  for (const [type, title] of [['new', 'Tutoriels vidéo'], ['fixed', 'Lecture des enregistrements']]) {
+    form.append('n_type', type); form.append('n_title', title); form.append('n_module', ''); form.append('n_body', '');
+  }
+  const res = await app.request(editor, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: form.toString(), redirect: 'manual' });
+  assert.equal(res.headers.get('location'), `${editor}?ok=published`);
+  const [rel] = await sql<{ status: string; notes: unknown[] }[]>`SELECT status, notes FROM releases WHERE tag = 'v9'`;
+  assert.equal(rel!.status, 'published');
+  assert.equal(rel!.notes.length, 2);
+
+  r = await req('POST', '/news/announcements', { _csrf: csrf, kind: 'maintenance', title: 'Maintenance', body: '', targetMode: 'all', audience: 'managers', startsAt: '2099-01-01T21:00', endsAt: '2099-01-01T20:00' });
+  assert.equal(r.status, 400);
+  assert.match(r.text, /fin doit suivre/);
+
+  const [me] = await sql<{ id: string }[]>`SELECT id FROM operators WHERE email = 'odo@example.fr'`;
+  await sql`UPDATE operators SET role = 'support' WHERE id = ${me!.id}`;
+  r = await req('GET', '/news');
+  assert.equal(r.status, 200, 'everyone can read');
+  assert.doesNotMatch(r.text, /Nouvelle annonce/, 'support does not get the button');
+  r = await req('POST', '/news/announcements', { _csrf: csrf, kind: 'info', title: 'x', body: '', targetMode: 'all', audience: 'managers' });
+  assert.equal(r.status, 403);
+  await sql`UPDATE operators SET role = 'owner' WHERE id = ${me!.id}`;
+});

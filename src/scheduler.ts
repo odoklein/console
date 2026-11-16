@@ -5,7 +5,8 @@
 //   - monthly restore drill;
 //   - nightly backup of the Console's own database; off-site copy of every encrypted backup;
 //   - re-check of custom domains waiting for their DNS record;
-//   - support inbox: each agency's Support Technique tickets every 2 minutes (src/support.ts).
+//   - support inbox: each agency's Support Technique tickets every 2 minutes (src/support.ts);
+//   - « Nouveautés »: due deliveries every tick, reading figures every 15 minutes (src/news.ts).
 // Each piece is an exported function of (platform, now) so the tests can drive time.
 
 import { listAgencies, readState, type Agency } from './agencies.ts';
@@ -18,6 +19,7 @@ import { enqueue, type JobKind } from './jobs/queue.ts';
 import { errorFields, log } from './log.ts';
 import type { Platform } from './platform.ts';
 import { supportPass } from './support.ts';
+import { deliveryPass, statsPass } from './news.ts';
 
 const LIVE = new Set(['active', 'suspended']);
 const CATALOG_TTL_MS = 6 * 3_600_000;
@@ -341,6 +343,10 @@ export async function tick(p: Platform, now: Date): Promise<Promise<void>[]> {
     ['backups', () => backupPass(p, now)],
     ['domains', () => domainPass(p, now)],
     ['offsite', () => offsitePass(p, now)],
+    ['news', async () => {
+      await deliveryPass(p, now);
+      await statsPass(p, now);
+    }],
     ['support', async () => {
       const run = supportInBackground(p, now);
       if (run) started.push(run);

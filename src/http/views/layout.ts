@@ -12,7 +12,9 @@ export type Chrome = {
   openAlerts?: number;
   /** Open support tickets this operator has not read since they changed. */
   supportUnread?: number;
-  active?: 'fleet' | 'support' | 'new' | 'alerts' | 'platform' | 'team' | 'audit';
+  /** Deliveries of « Nouveautés » that failed and wait for a person. */
+  newsAttention?: number;
+  active?: 'fleet' | 'support' | 'news' | 'new' | 'alerts' | 'platform' | 'team' | 'audit';
   csrf?: string;
 };
 
@@ -35,7 +37,7 @@ function nav(c: Chrome): Html {
   return html`<nav class="nav" aria-label="Navigation">
     <a href="/" class="brand">${brandLockup()}</a>
     <div class="nav-items">
-      ${item('fleet', '/', 'Agences')} ${item('support', '/support', 'Support', c.supportUnread, 'soft')} ${can(c.role, 'agency.create') ? item('new', '/agencies/new', 'Nouvelle agence') : ''} ${item('alerts', '/alerts', 'Alertes', c.openAlerts)}
+      ${item('fleet', '/', 'Agences')} ${item('support', '/support', 'Support', c.supportUnread, 'soft')} ${item('news', '/news', 'Nouveautés', c.newsAttention, 'soft')} ${can(c.role, 'agency.create') ? item('new', '/agencies/new', 'Nouvelle agence') : ''} ${item('alerts', '/alerts', 'Alertes', c.openAlerts)}
       ${item('platform', '/platform', 'Plateforme')} ${item('team', '/team', 'Équipe')} ${item('audit', '/audit', 'Journal')}
     </div>
     ${c.operator

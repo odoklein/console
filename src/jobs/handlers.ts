@@ -3,6 +3,7 @@
 // skips the steps that are already done where repeating them would be wrong or slow.
 
 import { getAgency, readState, updateAgency, type Agency } from '../agencies.ts';
+import { onAgencyVersion } from '../news.ts';
 import { openAlert, resolveAlert } from '../alerts.ts';
 import { deriveNames, validateAgencyConfig } from '../provision/plan.ts';
 import { scrub, stepCatalog, type State } from '../provision/run.ts';
@@ -167,7 +168,10 @@ const upgradeHandler: Handler = async (c) => {
     },
   });
   if (report.ok) {
-    await updateAgency(c.p.sql, c.agency.id, { imageTag: state.deployedTag ?? tag });
+    const deployed = state.deployedTag ?? tag;
+    await updateAgency(c.p.sql, c.agency.id, { imageTag: deployed });
+    // « Nouveautés »: the notes of the version it now runs (sent by the scheduler's delivery pass).
+    await onAgencyVersion(c.p.sql, c.agency.id, deployed).catch((err) => c.log(`Nouveautés non programmées : ${err instanceof Error ? err.message : String(err)}`));
     return;
   }
 

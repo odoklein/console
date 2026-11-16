@@ -59,6 +59,7 @@ and a drift check between `src/provision/` and the CRM's `scripts/provision-agen
 | **Health and alerts** | Probe every minute; alert (in-app, email, Slack) after 3 failures in a row, "back online" note when it recovers. Also: cron job failing 3 times, no backup in 36 h, failed drill, failed automatic job, failed rollback. |
 | **Central cron** | Reads each instance's `GET /api/instance/cron` catalog (refreshed every 6 h) and calls `POST /api/instance/cron` on schedule (UTC). Suspended agencies are skipped. Runs never overlap per job. |
 | **Support** | Every agency's Support Technique tickets in one inbox (`/support`): views (non lus, sans réponse, urgents, en retard, bloqués, à valider), agencies, search and filters; the ticket's conversation read live from its CRM; reply, reply-and-move, status and priority sent through `/api/instance/support/*`, signed with the operator's name; canned replies; keyboard shortcuts (j/k, /, r, ⌘↵). Synced every 2 minutes (full pass daily), an alert while an agency has an urgent ticket open. Needs CRM images from 2026-11-06 on; older ones show "pas encore l’API support". |
+| **Nouveautés** | What the agencies' teams see in their CRM (`/news`, `src/news.ts`). **Versions**: pick a tag and the one before; with `GITHUB_TOKEN` the Console drafts one note per meaningful commit (`feat` → Nouveau, `fix` → Corrigé, the rest → Amélioré; chores, docs, tests and merges left out; commit bodies never copied). Edit beside a live preview of the CRM panel, then publish: the notes reach every agency running that tag, and the others right after their upgrade (or all agencies at once). **Annonces**: feature, maintenance, info or billing, for all agencies, some packs or some agencies, managers or the whole team; a warning also shows a banner in the CRM from 48 h before its window. **Delivery**: signed `PUT/DELETE /api/instance/changelog` (contract in the CRM repo, `docs/CONSOLE_CHANGELOG.md`), one row per agency, retried with backoff (1 min → 1 day; a rejected payload waits 6 h); a CRM too old for the API is parked as « CRM trop ancien » and sent after its upgrade; retracting removes the entry from every CRM. **Reading**: every 15 minutes, how many people of each agency opened the panel. |
 | **Team and journal** | Operators by invitation link, email + password, 5 failures = 15 min lock. Four roles (`src/roles.ts`): Propriétaire (everything, the only one who deletes, manages the team, downloads the Console's dump), Opérateur, Support (reads, backs up, resolves alerts), Lecture. Password typed again before delete and restore. Open sessions listed and closable on the Team page. Journal with filters and CSV export. `npm run operator:role -- <email> owner` is the way back. |
 
 ## Deploy (Dokploy)
@@ -92,9 +93,11 @@ src/
   jobs/               queue (SKIP LOCKED), handlers per kind, shared ops, worker
   scheduler.ts        health, central cron, nightly backups, retention, drills, DNS re-checks
   support.ts          support inbox: ticket sync, inbox queries, live ticket, replies, canned replies
+  news.ts             « Nouveautés »: release notes, announcements, deliveries, reading figures
   alerts.ts auth.ts agencies.ts packs.ts cron.ts crypto.ts
   http/               Hono app and server-rendered views (no client framework)
-public/               app.css, common.js, job.js (live checklist), wizard.js
+public/               app.css (stretched layout: full-width bands, no floating cards), common.js,
+                      job.js (live checklist), wizard.js, support.js, news.js (note editor, live preview)
 migrations/           plain SQL
 test/                 fakes.ts (a whole fake fleet) + end-to-end tests
 ```

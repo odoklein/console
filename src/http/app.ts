@@ -67,6 +67,12 @@ import { dateTime, JOB_KIND, JOB_STATUS } from './views/format.ts';
 import type { Chrome } from './views/layout.ts';
 import { alertsPage, auditCsv, auditPage, AUDIT_FAMILIES, jobPage, platformPage, teamPage, type AuditFilters, type AuditRow, type Invite } from './views/misc.ts';
 import { wizardPage, type WizardValues } from './views/wizard.ts';
+import { announcementPage, newAnnouncementPage, newReleasePage, newsPage, releasePage, type AnnouncementForm } from './views/news.ts';
+import {
+  announcementProblem, cleanNotes, createAnnouncement, createRelease, deliveriesOf, getRelease, listAnnouncements, listReleases,
+  previousTag, publishRelease, reachByItem, releaseProblem, retract, retryDelivery, saveRelease, CATEGORIES,
+  type AnnouncementInput, type AnnouncementTarget, type Audience, type Category,
+} from '../news.ts';
 
 type Vars = { operator: Operator; session: Session; token: string; csrf: string };
 type C = Context<{ Variables: Vars }>;
@@ -75,7 +81,7 @@ export type AppOptions = { p: Platform; secureCookies: boolean; onJobQueued?: ()
 
 const COOKIE = 'console_session';
 const PUBLIC_DIR = new URL('../../public/', import.meta.url);
-const STATIC: Record<string, string> = { 'app.css': 'text/css', 'common.js': 'text/javascript', 'job.js': 'text/javascript', 'wizard.js': 'text/javascript', 'support.js': 'text/javascript' };
+const STATIC: Record<string, string> = { 'app.css': 'text/css', 'common.js': 'text/javascript', 'job.js': 'text/javascript', 'wizard.js': 'text/javascript', 'support.js': 'text/javascript', 'news.js': 'text/javascript' };
 const TAG = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const MAX_LOGO_BYTES = 1_048_576;
 
@@ -94,6 +100,21 @@ function sniffLogo(data: Uint8Array): string | null {
   return null;
 }
 
+/** "2026-11-18T21:00" typed in a datetime-local field, read as Paris time. Empty → null. */
+export function parisLocal(value: string): Date | null | 'invalid' {
+  if (!value) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return 'invalid';
+  const asUtc = Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!);
+  // Paris offset at that instant (summer/winter time), found from the formatted wall clock.
+  const offsetAt = (t: number) => {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Paris', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    return Date.UTC(+parts.year!, +parts.month! - 1, +parts.day!, +parts.hour!, +parts.minute!) - t;
+  };
+  const first = asUtc - offsetAt(asUtc);
+  return new Date(asUtc - offsetAt(first));
+}
+
 export function createApp(opts: AppOptions) {
   const { p } = opts;
   const { sql } = p;
@@ -103,8 +124,12 @@ export function createApp(opts: AppOptions) {
 
   async function chrome(c: C, active?: Chrome['active']): Promise<Chrome> {
     const op = c.get('operator');
-    const [[n], supportUnread] = await Promise.all([sql<{ n: number }[]>`SELECT count(*)::int AS n FROM alerts WHERE resolved_at IS NULL`, unreadCount(sql, op.id)]);
-    return { operator: { name: op.name, email: op.email }, role: op.role, openAlerts: n?.n ?? 0, supportUnread, active, csrf: c.get('csrf') };
+    const [[n], supportUnread, [news]] = await Promise.all([
+      sql<{ n: number }[]>`SELECT count(*)::int AS n FROM alerts WHERE resolved_at IS NULL`,
+      unreadCount(sql, op.id),
+      sql<{ n: number }[]>`SELECT count(*)::int AS n FROM deliveries WHERE status = 'failed' AND attempts >= 3`,
+    ]);
+    return { operator: { name: op.name, email: op.email }, role: op.role, openAlerts: n?.n ?? 0, supportUnread, newsAttention: news?.n ?? 0, active, csrf: c.get('csrf') };
   }
 
   async function forbidden(c: C, perm: Permission) {
@@ -960,6 +985,152 @@ export function createApp(opts: AppOptions) {
   }
 
   const auditQuery = (f: AuditFilters) => new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
+
+  // ---------- « Nouveautés » ----------
+
+  const NEWS_FLASH: Record<string, string> = {
+    published: 'Publiée : les envois partent vers les CRM dans la minute.',
+    saved: 'Brouillon enregistré.',
+    retracted: 'Retirée : elle disparaît des CRM dans la minute.',
+    sent: 'Annonce publiée : les envois partent vers les CRM dans la minute.',
+    retried: 'Nouvel essai programmé.',
+  };
+  const flashOf = (c: C) => NEWS_FLASH[c.req.query('ok') ?? ''];
+
+  app.get('/news', async (c) => {
+    const [releases, announcements, releaseReach, announcementReach, agencies] = await Promise.all([
+      listReleases(sql), listAnnouncements(sql), reachByItem(sql, 'release'), reachByItem(sql, 'announcement'), listAgencies(sql),
+    ]);
+    return c.html(newsPage({ chrome: await chrome(c, 'news'), releases, announcements, releaseReach, announcementReach, agencies, defaultTag: p.settings.defaultTag, flash: flashOf(c) }));
+  });
+
+  const tagsInService = async () => {
+    const live = (await listAgencies(sql)).filter((a) => a.status === 'active' || a.status === 'suspended');
+    const by = new Map<string, string[]>();
+    for (const a of live) if (a.imageTag) by.set(a.imageTag, [...(by.get(a.imageTag) ?? []), a.name]);
+    return [...by.entries()].map(([tag, agencies]) => ({ tag, agencies }));
+  };
+
+  app.get('/news/releases/new', need('release.manage'), async (c) =>
+    c.html(newReleasePage({ chrome: await chrome(c, 'news'), tags: await tagsInService(), defaultTag: p.settings.defaultTag, fromTag: await previousTag(sql), hasGithub: !!p.infra.github })));
+
+  app.post('/news/releases', need('release.manage'), async (c) => {
+    const body = await c.req.parseBody();
+    const tag = String(body.tag ?? '').trim();
+    const fromTag = String(body.fromTag ?? '').trim();
+    const r = await createRelease(p, { tag, fromTag, operatorId: c.get('operator').id, now: new Date() });
+    if (!r.ok) {
+      return c.html(newReleasePage({ chrome: await chrome(c, 'news'), tags: await tagsInService(), defaultTag: p.settings.defaultTag, fromTag, hasGithub: !!p.infra.github, error: r.error, values: { tag, fromTag } }), 400);
+    }
+    await audit(sql, { operatorId: c.get('operator').id, action: 'release.create', detail: { tag, fromTag, drafted: r.drafted }, ip: ipOf(c) });
+    return c.redirect(`/news/releases/${r.id}${r.githubError ? '?gh=1' : ''}`);
+  });
+
+  const renderRelease = async (c: C, id: string, extra: { error?: string; flash?: string } = {}, status: 200 | 400 = 200) => {
+    const release = await getRelease(sql, id);
+    if (!release) return c.notFound();
+    const [deliveries, agencies] = await Promise.all([deliveriesOf(sql, 'release', id), listAgencies(sql)]);
+    const onTag = agencies.filter((a) => (a.status === 'active' || a.status === 'suspended') && a.imageTag === release.tag).map((a) => a.name);
+    const gh = c.req.query('gh') ? 'GitHub n’a pas répondu : écrivez les notes à la main, ou recréez le brouillon plus tard.' : undefined;
+    return c.html(releasePage({ chrome: await chrome(c, 'news'), release, deliveries, onTag, error: extra.error ?? gh, flash: extra.flash ?? flashOf(c) }), status);
+  };
+
+  app.get('/news/releases/:id', async (c) => renderRelease(c, c.req.param('id')));
+
+  app.post('/news/releases/:id', need('release.manage'), async (c) => {
+    const id = c.req.param('id');
+    const release = await getRelease(sql, id);
+    if (!release) return c.notFound();
+    const body = await c.req.parseBody({ all: true });
+    const list = (k: string) => [body[k] ?? []].flat().map((v) => String(v));
+    const types = list('n_type'), titles = list('n_title'), modules = list('n_module'), bodies = list('n_body');
+    const notes = cleanNotes(titles.map((title, i) => ({ type: types[i], title, module: modules[i] ?? '', body: bodies[i] ?? '' })));
+    const draft = {
+      title: String(body.title ?? '').trim(),
+      summary: String(body.summary ?? '').trim(),
+      audience: (body.audience === 'everyone' ? 'everyone' : 'managers') as Audience,
+      target: (body.target === 'all' ? 'all' : 'tag') as 'tag' | 'all',
+      notes: notes.ok ? notes.notes : release.notes,
+    };
+    if (!notes.ok) return renderRelease(c, id, { error: notes.error }, 400);
+    const problem = draft.title.length > 140 ? 'Titre trop long (140 caractères au plus).' : draft.summary.length > 4000 ? 'Résumé trop long.' : null;
+    if (problem) return renderRelease(c, id, { error: problem }, 400);
+    await saveRelease(sql, id, draft);
+    const op = c.get('operator').id;
+    if (body.intent === 'publish') {
+      const r = await publishRelease(sql, id);
+      if (!r.ok) return renderRelease(c, id, { error: r.error }, 400);
+      await audit(sql, { operatorId: op, action: 'release.publish', detail: { tag: release.tag, queued: r.queued }, ip: ipOf(c) });
+      return c.redirect(`/news/releases/${id}?ok=published`);
+    }
+    await audit(sql, { operatorId: op, action: 'release.save', detail: { tag: release.tag, notes: draft.notes.length }, ip: ipOf(c) });
+    return c.redirect(`/news/releases/${id}?ok=saved`);
+  });
+
+  app.post('/news/releases/:id/retract', need('release.manage'), async (c) => {
+    const release = await getRelease(sql, c.req.param('id'));
+    if (!release) return c.notFound();
+    await retract(sql, 'release', release.id);
+    await audit(sql, { operatorId: c.get('operator').id, action: 'release.retract', detail: { tag: release.tag }, ip: ipOf(c) });
+    return c.redirect(`/news/releases/${release.id}?ok=retracted`);
+  });
+
+  app.get('/news/announcements/new', need('announcement.send'), async (c) =>
+    c.html(newAnnouncementPage({ chrome: await chrome(c, 'news'), agencies: await listAgencies(sql) })));
+
+  app.post('/news/announcements', need('announcement.send'), async (c) => {
+    const body = await c.req.parseBody({ all: true });
+    const one = (k: string) => String([body[k] ?? ''].flat()[0] ?? '').trim();
+    const list = (k: string) => [body[k] ?? []].flat().map((v) => String(v));
+    const form: AnnouncementForm = {
+      kind: one('kind'), title: one('title'), body: one('body'), severity: one('severity') === 'warning' ? 'warning' : 'info',
+      audience: one('audience') === 'everyone' ? 'everyone' : 'managers', startsAt: one('startsAt'), endsAt: one('endsAt'),
+      ctaLabel: one('ctaLabel'), ctaUrl: one('ctaUrl'), targetMode: one('targetMode') || 'all', packs: list('packs'), agencyIds: list('agencyIds'),
+    };
+    const startsAt = parisLocal(form.startsAt);
+    const endsAt = parisLocal(form.endsAt);
+    const target: AnnouncementTarget = form.targetMode === 'packs' ? { packs: form.packs } : form.targetMode === 'agencies' ? { agencyIds: form.agencyIds } : { all: true };
+    const input: AnnouncementInput = {
+      kind: (CATEGORIES as readonly string[]).includes(form.kind) ? (form.kind as Category) : ('' as Category),
+      title: form.title, body: form.body, severity: form.severity as 'info' | 'warning', audience: form.audience as Audience,
+      startsAt: startsAt === 'invalid' ? null : startsAt, endsAt: endsAt === 'invalid' ? null : endsAt,
+      ctaLabel: form.ctaLabel || null, ctaUrl: form.ctaUrl || null, target,
+    };
+    const problem = startsAt === 'invalid' || endsAt === 'invalid' ? 'Date illisible.' : announcementProblem(input);
+    if (problem) return c.html(newAnnouncementPage({ chrome: await chrome(c, 'news'), agencies: await listAgencies(sql), values: form, error: problem }), 400);
+    const r = await createAnnouncement(sql, input, c.get('operator').id);
+    await audit(sql, { operatorId: c.get('operator').id, action: 'announcement.create', detail: { id: r.id, kind: input.kind, title: input.title, queued: r.queued }, ip: ipOf(c) });
+    return c.redirect(`/news/announcements/${r.id}?ok=sent`);
+  });
+
+  app.get('/news/announcements/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/.test(id)) return c.notFound();
+    const [announcement] = await sql<import('../news.ts').Announcement[]>`SELECT * FROM announcements WHERE id = ${id}`;
+    if (!announcement) return c.notFound();
+    const [deliveries, agencies] = await Promise.all([deliveriesOf(sql, 'announcement', id), listAgencies(sql)]);
+    return c.html(announcementPage({ chrome: await chrome(c, 'news'), announcement, agencies, deliveries, flash: flashOf(c) }));
+  });
+
+  app.post('/news/announcements/:id/retract', need('announcement.send'), async (c) => {
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/.test(id)) return c.notFound();
+    await retract(sql, 'announcement', id);
+    await audit(sql, { operatorId: c.get('operator').id, action: 'announcement.retract', detail: { id }, ip: ipOf(c) });
+    return c.redirect(`/news/announcements/${id}?ok=retracted`);
+  });
+
+  app.post('/news/deliveries/:id/retry', async (c) => {
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/.test(id)) return c.notFound();
+    const [d] = await sql<{ itemKind: 'release' | 'announcement'; itemId: string }[]>`SELECT item_kind, item_id FROM deliveries WHERE id = ${id}`;
+    if (!d) return c.notFound();
+    const perm = d.itemKind === 'release' ? 'release.manage' : 'announcement.send';
+    if (!can(c.get('operator').role, perm)) return forbidden(c, perm);
+    await retryDelivery(sql, id);
+    await audit(sql, { operatorId: c.get('operator').id, action: 'delivery.retry', detail: { id }, ip: ipOf(c) });
+    return c.redirect(`/news/${d.itemKind === 'release' ? 'releases' : 'announcements'}/${d.itemId}?ok=retried`);
+  });
 
   app.get('/audit', async (c) => {
     const { filters, before } = auditFilters(c);
