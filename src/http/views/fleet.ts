@@ -73,7 +73,15 @@ function rolloutCard(r: { rollout: Rollout; items: RolloutItem[] }, chrome: Chro
   </section>`;
 }
 
-export function fleetPage(input: { agencies: Agency[]; chrome: Chrome; now: Date; runningJobs: Map<string, string>; versions: string[]; rollout?: { rollout: Rollout; items: RolloutItem[] } | null }): Html {
+/** Open Support Technique tickets of the agency, the urgent ones in red. */
+function supportCell(a: Agency, s: { open: number; urgent: number; error: string | null } | undefined): Html {
+  if (a.status !== 'active' && a.status !== 'suspended') return html`<span class="muted">—</span>`;
+  if (!s) return html`<span class="muted">—</span>`;
+  return html`<a class="support-cell${s.urgent ? ' is-hot' : ''}" href="/support?agency=${a.slug}" title="${s.error ? `Synchronisation : ${s.error}` : `${s.open} ticket(s) ouvert(s)${s.urgent ? `, dont ${s.urgent} urgent(s)` : ''}`}">
+    ${s.error ? html`<span class="dot dot-danger"></span>` : s.urgent ? html`<span class="dot dot-danger"></span>` : ''}<span>${s.open}</span>${s.urgent ? html`<span class="small">· ${s.urgent} urgent${s.urgent > 1 ? 's' : ''}</span>` : ''}</a>`;
+}
+
+export function fleetPage(input: { agencies: Agency[]; chrome: Chrome; now: Date; runningJobs: Map<string, string>; versions: string[]; rollout?: { rollout: Rollout; items: RolloutItem[] } | null; support?: Map<string, { open: number; urgent: number; error: string | null }> }): Html {
   const { agencies, now } = input;
   const live = agencies.filter((a) => a.status === 'active' || a.status === 'suspended');
   const down = live.filter((a) => a.healthOk === false).length;
@@ -94,7 +102,7 @@ export function fleetPage(input: { agencies: Agency[]; chrome: Chrome; now: Date
       ? html`<div class="table-wrap">
           <table class="table cards-sm">
             <thead>
-              <tr><th>Agence</th><th>Adresse</th><th>État</th><th>Santé</th><th>Version</th><th>Utilisateurs</th><th>Stockage</th><th>Dernière sauvegarde</th></tr>
+              <tr><th>Agence</th><th>Adresse</th><th>État</th><th>Santé</th><th>Version</th><th>Utilisateurs</th><th>Support</th><th>Stockage</th><th>Dernière sauvegarde</th></tr>
             </thead>
             <tbody>
               ${agencies.map((a) => {
@@ -108,6 +116,7 @@ export function fleetPage(input: { agencies: Agency[]; chrome: Chrome; now: Date
                   <td data-label="Santé">${healthCell(a, now)}</td>
                   <td data-label="Version"><code>${a.imageTag ?? '—'}</code></td>
                   <td data-label="Utilisateurs">${seats(a)}</td>
+                  <td data-label="Support">${supportCell(a, input.support?.get(a.id))}</td>
                   <td data-label="Stockage">${bytes(a.storageBytes)}</td>
                   <td data-label="Dernière sauvegarde" title="${dateTime(a.lastBackupAt)}">${a.status === 'deleted' ? '—' : ago(a.lastBackupAt, now)}</td>
                 </tr>`;

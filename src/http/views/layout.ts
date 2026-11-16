@@ -10,7 +10,9 @@ export type Chrome = {
   /** The signed-in operator's role: pages hide what it cannot do (the routes refuse it anyway). */
   role?: Role;
   openAlerts?: number;
-  active?: 'fleet' | 'new' | 'alerts' | 'platform' | 'team' | 'audit';
+  /** Open support tickets this operator has not read since they changed. */
+  supportUnread?: number;
+  active?: 'fleet' | 'support' | 'new' | 'alerts' | 'platform' | 'team' | 'audit';
   csrf?: string;
 };
 
@@ -26,14 +28,14 @@ export function brandLockup(size = 26): Html {
 }
 
 function nav(c: Chrome): Html {
-  const item = (key: NonNullable<Chrome['active']>, href: string, label: string, badge?: number) =>
+  const item = (key: NonNullable<Chrome['active']>, href: string, label: string, badge?: number, tone = 'danger') =>
     html`<a href="${href}" class="nav-item${c.active === key ? ' is-active' : ''}" ${c.active === key ? html`aria-current="page"` : ''}>
-      ${icon(key)}<span class="nav-label">${label}</span>${badge ? html`<span class="badge badge-danger">${badge}</span>` : ''}</a>`;
+      ${icon(key)}<span class="nav-label">${label}</span>${badge ? html`<span class="badge badge-${tone}" ${key === 'support' ? html`id="nav-support-badge" title="${badge} ticket(s) non lu(s)"` : ''}>${badge}</span>` : ''}</a>`;
   const initials = c.operator?.name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') ?? '';
   return html`<nav class="nav" aria-label="Navigation">
     <a href="/" class="brand">${brandLockup()}</a>
     <div class="nav-items">
-      ${item('fleet', '/', 'Agences')} ${can(c.role, 'agency.create') ? item('new', '/agencies/new', 'Nouvelle agence') : ''} ${item('alerts', '/alerts', 'Alertes', c.openAlerts)}
+      ${item('fleet', '/', 'Agences')} ${item('support', '/support', 'Support', c.supportUnread, 'soft')} ${can(c.role, 'agency.create') ? item('new', '/agencies/new', 'Nouvelle agence') : ''} ${item('alerts', '/alerts', 'Alertes', c.openAlerts)}
       ${item('platform', '/platform', 'Plateforme')} ${item('team', '/team', 'Équipe')} ${item('audit', '/audit', 'Journal')}
     </div>
     ${c.operator

@@ -30,6 +30,8 @@ export function agencyPage(input: {
   platformDomain: string;
   defaultTag: string;
   now: Date;
+  /** Open Support Technique tickets, from the Console's support cache. */
+  support?: { open: number; urgent: number; error: string | null } | null;
 }): Html {
   const { agency: a, chrome, now } = input;
   const csrf = chrome.csrf;
@@ -50,7 +52,10 @@ export function agencyPage(input: {
         · créée ${dateTime(a.createdAt)}</p>
     </div>
     <div class="head-actions">
-      ${a.status === 'active' || a.status === 'suspended' ? html`<a class="btn" href="/agencies/${a.slug}/keys">Clés & configuration</a>` : ''}
+      ${a.status === 'active' || a.status === 'suspended'
+        ? html`<a class="btn${input.support?.urgent ? ' btn-warn' : ''}" href="/support?agency=${a.slug}" title="${input.support?.error ? `Synchronisation : ${input.support.error}` : 'Tickets Support Technique de cette agence'}">Support${input.support ? html` <span class="badge badge-soft">${input.support.open}</span>` : ''}${input.support?.urgent ? html` <span class="small">${input.support.urgent} urgent${input.support.urgent > 1 ? 's' : ''}</span>` : ''}</a>
+            <a class="btn" href="/agencies/${a.slug}/keys">Clés & configuration</a>`
+        : ''}
       ${busy ? html`<a class="btn" href="/jobs/${busy.id}">${JOB_KIND[busy.kind]} : ${JOB_STATUS[busy.status].label.toLowerCase()}…</a>` : ''}
     </div>
   </header>`;

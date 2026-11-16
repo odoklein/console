@@ -181,6 +181,7 @@ export const AUDIT_FAMILIES: { value: string; label: string }[] = [
   { value: 'session.', label: 'Sessions' },
   { value: 'reauth.', label: 'Confirmations refusées' },
   { value: 'alert.', label: 'Alertes' },
+  { value: 'support.', label: 'Support (tickets des agences)' },
 ];
 
 export function auditPage(input: {

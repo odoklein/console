@@ -34,7 +34,7 @@ npm run dev                   # terminal 2: http://localhost:3100
 
 Open the setup link and choose a password: you are signed in.
 
-Checks: `npm run typecheck`, `npm test` (19 tests: every operation end to end over a fake
+Checks: `npm run typecheck`, `npm test` (44 tests: every operation end to end over a fake
 fleet and a real in-process Postgres, the web flows, cron matching,
 and a drift check between `src/provision/` and the CRM's `scripts/provision-agency/`).
 
@@ -58,6 +58,7 @@ and a drift check between `src/provision/` and the CRM's `scripts/provision-agen
 | **Delete** | Two confirmation pages with the typed slug. Suspend → export → final backup → Dokploy app → proxy route → database and role → bucket and scoped key → record archived (secrets wiped). Each step is skipped on retry once done. "Forced" mode for a dead instance. |
 | **Health and alerts** | Probe every minute; alert (in-app, email, Slack) after 3 failures in a row, "back online" note when it recovers. Also: cron job failing 3 times, no backup in 36 h, failed drill, failed automatic job, failed rollback. |
 | **Central cron** | Reads each instance's `GET /api/instance/cron` catalog (refreshed every 6 h) and calls `POST /api/instance/cron` on schedule (UTC). Suspended agencies are skipped. Runs never overlap per job. |
+| **Support** | Every agency's Support Technique tickets in one inbox (`/support`): views (non lus, sans réponse, urgents, en retard, bloqués, à valider), agencies, search and filters; the ticket's conversation read live from its CRM; reply, reply-and-move, status and priority sent through `/api/instance/support/*`, signed with the operator's name; canned replies; keyboard shortcuts (j/k, /, r, ⌘↵). Synced every 2 minutes (full pass daily), an alert while an agency has an urgent ticket open. Needs CRM images from 2026-11-06 on; older ones show "pas encore l’API support". |
 | **Team and journal** | Operators by invitation link, email + password, 5 failures = 15 min lock. Four roles (`src/roles.ts`): Propriétaire (everything, the only one who deletes, manages the team, downloads the Console's dump), Opérateur, Support (reads, backs up, resolves alerts), Lecture. Password typed again before delete and restore. Open sessions listed and closable on the Team page. Journal with filters and CSV export. `npm run operator:role -- <email> owner` is the way back. |
 
 ## Deploy (Dokploy)
@@ -90,6 +91,7 @@ src/
   infra/              Infra interface (types.ts) and the real servers (real.ts)
   jobs/               queue (SKIP LOCKED), handlers per kind, shared ops, worker
   scheduler.ts        health, central cron, nightly backups, retention, drills, DNS re-checks
+  support.ts          support inbox: ticket sync, inbox queries, live ticket, replies, canned replies
   alerts.ts auth.ts agencies.ts packs.ts cron.ts crypto.ts
   http/               Hono app and server-rendered views (no client framework)
 public/               app.css, common.js, job.js (live checklist), wizard.js
